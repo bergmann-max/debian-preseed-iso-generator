@@ -1,2 +1,5 @@
 *.iso
-
+build/
+out/
+profiles/*/isofiles/
+profiles/*/*.iso

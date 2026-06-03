@@ -1,12 +1,15 @@
-# DMZ
-#
-#source: https://www.debian.org/releases/bullseye/example-preseed.txt
-
 #_preseed_V1
-#### Contents of the preconfiguration file (for bullseye)
+#### Debian preseed template (Trixie).
+# Rendered per profile via envsubst from profiles/<name>/<name>.env.
+# Source reference: https://www.debian.org/releases/trixie/example-preseed.txt
+#
+# Active directives use ${VAR} placeholders; profile .env supplies values.
+# Commented-out blocks are documentation/examples — uncomment + adapt as needed
+# (or override entirely by shipping a raw preseed.cfg in the profile dir).
+
 ### Localization
 # Preseeding only locale sets language, country and locale.
-d-i debian-installer/locale string en_US
+d-i debian-installer/locale string ${LOCALE}
 
 # The values can also be preseeded individually for greater flexibility.
 #d-i debian-installer/language string en
@@ -16,8 +19,17 @@ d-i debian-installer/locale string en_US
 #d-i localechooser/supported-locales multiselect en_US.UTF-8, nl_NL.UTF-8
 
 # Keyboard selection.
-d-i keyboard-configuration/xkb-keymap select us
+d-i keyboard-configuration/xkb-keymap select ${KEYMAP}
 # d-i keyboard-configuration/toggle select No toggling
+
+### Speech synthesis
+# Which ALSA card to be used for software speech.
+# Can be a number from 0, or an ID as seen in
+# /sys/class/sound/card*/id
+#d-i espeakup/card string 0
+
+# Which espeak-ng voice to be used
+#d-i espeakup/voice string en
 
 ### Network configuration
 # Disable network configuration entirely. This is useful for cdrom
@@ -71,8 +83,8 @@ d-i netcfg/choose_interface select auto
 # Any hostname and domain names assigned from dhcp take precedence over
 # values set here. However, setting the values still prevents the questions
 # from being shown, even if values come from dhcp.
-d-i netcfg/get_hostname string unassigned-hostname
-d-i netcfg/get_domain string unassigned-domain
+d-i netcfg/get_hostname string ${HOSTNAME}
+d-i netcfg/get_domain string ${DOMAIN}
 
 # If you want to force a hostname, regardless of what either the DHCP
 # server returns or what the reverse DNS entry for the IP is, uncomment
@@ -83,6 +95,10 @@ d-i netcfg/get_domain string unassigned-domain
 d-i netcfg/wireless_wep string
 # The wacky dhcp hostname that some ISPs use as a password of sorts.
 #d-i netcfg/dhcp_hostname string radish
+
+# If you want to completely disable firmware lookup (i.e. not use firmware
+# files or packages that might be available on installation images):
+#d-i hw-detect/firmware-lookup string never
 
 # If non-free firmware is needed for the network or other hardware, you can
 # configure the installer to always try to load it, without prompting. Or
@@ -104,9 +120,9 @@ d-i netcfg/wireless_wep string
 # Default value for the mirror protocol: http.
 #d-i mirror/protocol string ftp
 d-i mirror/country string manual
-d-i mirror/http/hostname string http.us.debian.org
-d-i mirror/http/directory string /debian
-d-i mirror/http/proxy string
+d-i mirror/http/hostname string ${MIRROR_HOST}
+d-i mirror/http/directory string ${MIRROR_DIR}
+d-i mirror/http/proxy string ${MIRROR_PROXY}
 
 # Suite to install.
 #d-i mirror/suite string testing
@@ -120,20 +136,14 @@ d-i mirror/http/proxy string
 # Alternatively, to skip creation of a normal user account.
 #d-i passwd/make-user boolean false
 
-# Root password, either in clear text
-#d-i passwd/root-password password r00tme
-#d-i passwd/root-password-again password r00tme
-# or encrypted using a crypt(3)  hash.
-#d-i passwd/root-password-crypted password [crypt(3) hash]
+# Root password as a crypt(3) hash. Generate with: mkpasswd -m sha-512
+# Leave ROOT_PASSWORD_HASH empty in the profile .env to be prompted at install.
+d-i passwd/root-password-crypted password ${ROOT_PASSWORD_HASH}
 
-# To create a normal user account.
-#d-i passwd/user-fullname string Debian User
-#d-i passwd/username string debian
-# Normal user's password, either in clear text
-#d-i passwd/user-password password insecure
-#d-i passwd/user-password-again password insecure
-# or encrypted using a crypt(3) hash.
-#d-i passwd/user-password-crypted password [crypt(3) hash]
+# Normal user account, password also as a crypt(3) hash.
+d-i passwd/user-fullname string ${USER_FULLNAME}
+d-i passwd/username string ${USER_NAME}
+d-i passwd/user-password-crypted password ${USER_PASSWORD_HASH}
 # Create the first user with the specified UID instead of the default.
 #d-i passwd/user-uid string 1010
 
@@ -147,12 +157,12 @@ d-i clock-setup/utc boolean true
 
 # You may set this to any valid setting for $TZ; see the contents of
 # /usr/share/zoneinfo/ for valid values.
-d-i time/zone string US/Eastern
+d-i time/zone string ${TIMEZONE}
 
 # Controls whether to use NTP to set the clock during the install
 d-i clock-setup/ntp boolean true
 # NTP server to use. The default is almost always fine here.
-#d-i clock-setup/ntp-server string ntp.example.com
+d-i clock-setup/ntp-server string ${NTP_SERVER}
 
 ### Partitioning
 ## Partitioning example
@@ -171,12 +181,12 @@ d-i clock-setup/ntp boolean true
 # - regular: use the usual partition types for your architecture
 # - lvm:     use LVM to partition the disk
 # - crypto:  use LVM within an encrypted partition
-d-i partman-auto/method string lvm
+d-i partman-auto/method string ${PARTITION_METHOD}
 
 # You can define the amount of space that will be used for the LVM volume
 # group. It can either be a size with its unit (eg. 20 GB), a percentage of
 # free space or the 'max' keyword.
-d-i partman-auto-lvm/guided_size string max
+d-i partman-auto-lvm/guided_size string ${LVM_SIZE}
 
 # If one of the disks that are going to be automatically partitioned
 # contains an old LVM configuration, the user will normally receive a
@@ -188,11 +198,13 @@ d-i partman-md/device_remove_md boolean true
 d-i partman-lvm/confirm boolean true
 d-i partman-lvm/confirm_nooverwrite boolean true
 
-# You can choose one of the three predefined partitioning recipes:
+# You can choose one of the predefined partitioning recipes:
 # - atomic: all files in one partition
 # - home:   separate /home partition
 # - multi:  separate /home, /var, and /tmp partitions
-d-i partman-auto/choose_recipe select atomic
+# - server: separate /var and /srv partitions; swap limitted to 1G
+# - small_disk: scheme dedicated to small harddrives (under 10GB)
+d-i partman-auto/choose_recipe select ${PARTITION_RECIPE}
 
 # Or provide a recipe of your own...
 # If you have a way to get a recipe file into the d-i environment, you can
@@ -262,7 +274,7 @@ d-i partman/confirm_nooverwrite boolean true
 # so this will only work if the disks are the same size.
 #d-i partman-auto/disk string /dev/sda /dev/sdb
 
-# Next you need to specify the physical partitions that will be used. 
+# Next you need to specify the physical partitions that will be used.
 #d-i partman-auto/expert_recipe string \
 #      multiraid ::                                         \
 #              1000 5000 4000 raid                          \
@@ -325,9 +337,11 @@ d-i partman/confirm_nooverwrite boolean true
 # Choose, if you want to scan additional installation media
 # (default: false).
 d-i apt-setup/cdrom/set-first boolean false
+# You can choose to install non-free firmware.
+d-i apt-setup/non-free-firmware boolean ${APT_NON_FREE_FIRMWARE}
 # You can choose to install non-free and contrib software.
-#d-i apt-setup/non-free boolean true
-#d-i apt-setup/contrib boolean true
+d-i apt-setup/non-free boolean ${APT_NON_FREE}
+d-i apt-setup/contrib boolean ${APT_CONTRIB}
 # Uncomment the following line, if you don't want to have the sources.list
 # entry for a DVD/BD installation image active in the installed system
 # (entries for netinst or CD images will be disabled anyway, regardless of
@@ -350,10 +364,12 @@ d-i apt-setup/cdrom/set-first boolean false
 # apt will complain about the unauthenticated repository and so the
 # sources.list line will be left commented out.
 #d-i apt-setup/local0/key string http://local.server/key
-# If the provided key file ends in ".asc" the key file needs to be an
-# ASCII-armoured PGP key, if it ends in ".gpg" it needs to use the
-# "GPG key public keyring" format, the "keybox database" format is
-# currently not supported.
+# or one can provide it in-line by base64 encoding the contents of the
+# key file (with `base64 -w0`) and specifying it thus:
+#d-i apt-setup/local0/key string base64://LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCi4uLgo=
+# The content of the key file is checked to see if it appears to be ASCII-armoured.
+# If so it will be saved with an ".asc" extension, otherwise it gets a '.gpg' extension.
+# "keybox database" format is currently not supported. (see generators/60local in apt-setup's source)
 
 # By default the installer requires that repositories be authenticated
 # using a known gpg key. This setting can be used to disable that
@@ -365,35 +381,35 @@ d-i apt-setup/cdrom/set-first boolean false
 
 
 ### Package selection
-#tasksel tasksel/first multiselect standard, web-server, kde-desktop
+tasksel tasksel/first multiselect ${TASKS}
 
 # Or choose to not get the tasksel dialog displayed at all (and don't install
 # any packages):
 #d-i pkgsel/run_tasksel boolean false
 
 # Individual additional packages to install
-#d-i pkgsel/include string openssh-server build-essential
+d-i pkgsel/include string ${PACKAGES}
 # Whether to upgrade packages after debootstrap.
 # Allowed values: none, safe-upgrade, full-upgrade
-#d-i pkgsel/upgrade select none
+d-i pkgsel/upgrade select ${UPGRADE_POLICY}
 
 # You can choose, if your system will report back on what software you have
 # installed, and what software you use. The default is not to report back,
 # but sending reports helps the project determine what software is most
-# popular and should be included on the first CD/DVD.
-#popularity-contest popularity-contest/participate boolean false
+# popular and should be included on the first DVD.
+popularity-contest popularity-contest/participate boolean ${POPCON}
 
 ### Boot loader installation
 # Grub is the boot loader (for x86).
 
 # This is fairly safe to set, it makes grub install automatically to the UEFI
 # partition/boot record if no other operating system is detected on the machine.
-d-i grub-installer/only_debian boolean true
+d-i grub-installer/only_debian boolean ${GRUB_ONLY_DEBIAN}
 
 # This one makes grub-installer install to the UEFI partition/boot record, if
 # it also finds some other OS, which is less safe as it might not be able to
 # boot that other OS.
-d-i grub-installer/with_other_os boolean true
+d-i grub-installer/with_other_os boolean ${GRUB_WITH_OTHER_OS}
 
 # Due notably to potential USB sticks, the location of the primary drive can
 # not be determined safely in general, so this needs to be specified:
@@ -429,7 +445,7 @@ d-i grub-installer/with_other_os boolean true
 # Avoid that last message about the install being complete.
 d-i finish-install/reboot_in_progress note
 
-# This will prevent the installer from ejecting the CD during the reboot,
+# This will prevent the installer from ejecting the disc during the reboot,
 # which is useful in some situations.
 #d-i cdrom-detect/eject boolean false
 
@@ -470,4 +486,4 @@ d-i finish-install/reboot_in_progress note
 # still a usable /target directory. You can chroot to /target and use it
 # directly, or use the apt-install and in-target commands to easily install
 # packages and run commands in the target system.
-#d-i preseed/late_command string apt-install zsh; in-target chsh -s /bin/zsh
+d-i preseed/late_command string ${LATE_COMMAND}
