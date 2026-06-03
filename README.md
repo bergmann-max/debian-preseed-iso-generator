@@ -1,14 +1,14 @@
 # debian-preseed-iso-generator
 
-[![Debian](https://img.shields.io/badge/Debian-preseed-D70A53?logo=debian&style=for-the-badge)](https://www.debian.org/)
+[![Debian](https://img.shields.io/badge/Debian-preseed-D70A53?logo=debian&style=for-the-badge)](https://www.debian.org/releases/stable/amd64/apb.en.html)
 [![Version](https://img.shields.io/github/v/tag/bergmann-max/debian-preseed-iso-generator?label=version&color=green&sort=semver&style=for-the-badge)](https://github.com/bergmann-max/debian-preseed-iso-generator/tags)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
-Generate Debian netinst ISOs with embedded preseed configuration, one ISO per profile.
+Build bootable Debian netinst ISOs, each with its own preseed injected.
 
 ## Requirements
 
-`bash` >= 4.x (uses `mapfile`).
+`bash` >= 4.x
 
 ```bash
 sudo apt install wget curl xorriso cpio gzip gnupg
@@ -23,20 +23,21 @@ Optional: install `debian-archive-keyring` (or `debian-keyring`) for GPG signatu
 ```bash
 git clone https://github.com/bergmann-max/debian-preseed-iso-generator.git
 cd debian-preseed-iso-generator
+chmod u+x debian-preseed-iso-generator.sh
 ./debian-preseed-iso-generator.sh
 ```
 
-The script downloads the latest Debian netinst ISO, injects each profile's preseed.cfg, and writes the result to `out/<profile>-preseed-debian-<arch>-netinst.iso`.
+The script downloads the latest Debian netinst ISO, injects each preseed's preseed.cfg, and writes the result to `out/<preseed>-preseed-debian-<arch>-netinst.iso`.
 
-## Profiles
+## Preseeds
 
 ```
-profiles/
+preseeds/
   default/preseed.cfg
   minimal/preseed.cfg
 ```
 
-Each profile directory contains a `preseed.cfg` file that is injected directly into the ISO's initrd. Copy an existing profile and edit the preseed directives to create a new variant. See [docs/PROFILES.md](docs/PROFILES.md) for details.
+Each preseed directory contains a `preseed.cfg` file that is injected directly into the ISO's initrd. Copy an existing preseed and edit the preseed directives to create a new variant. See [docs/PRESEEDS.md](docs/PRESEEDS.md) for details.
 
 ## CLI
 
@@ -44,15 +45,16 @@ Each profile directory contains a `preseed.cfg` file that is injected directly i
 Usage: ./debian-preseed-iso-generator.sh [OPTIONS]
 
 Options:
-  -p, --profile NAME   build only specified profile
-  -l, --list           list available profiles and exit
+  -p, --preseed NAME   build only specified preseed
+  -l, --list           list available preseeds and exit
   -n, --dry-run        show what would be done without executing
   -o, --output DIR     output directory (default: out/)
   -a, --arch ARCH      target architecture (default: amd64)
+      --no-color       disable colored output
   -V, --version        print version and exit
   -h, --help           show this help
 
-With no options, builds all profiles found in profiles/.
+With no options, builds all preseeds found in preseeds/.
 ```
 
 ## UEFI support
@@ -63,10 +65,21 @@ The generated ISO boots on both BIOS and UEFI systems. Test with:
 # BIOS
 qemu-system-x86_64 -cdrom out/minimal-preseed-debian-amd64-netinst.iso -m 2G
 
-# UEFI
-qemu-system-x86_64 -cdrom out/minimal-preseed-debian-amd64-netinst.iso -m 2G \
-  -bios /usr/share/ovmf/OVMF.fd
+# UEFI (copy OVMF_VARS so QEMU can write to it)
+cp /usr/share/edk2/x64/OVMF_VARS.4m.fd /tmp/vars.fd
+qemu-system-x86_64 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+  -drive if=pflash,format=raw,file=/tmp/vars.fd \
+  -cdrom out/minimal-preseed-debian-amd64-netinst.iso -m 2G
 ```
+
+OVMF paths by distro (adjust as needed):
+
+| Distro          | OVMF path                                |
+|-----------------|------------------------------------------|
+| Arch | `/usr/share/edk2/x64/OVMF_*.4m.fd`       |
+| Debian / Ubuntu | `/usr/share/OVMF/OVMF_CODE.fd`           |
+| Fedora          | `/usr/share/edk2/ovmf/OVMF_CODE.fd`      |
 
 ## Notes
 
