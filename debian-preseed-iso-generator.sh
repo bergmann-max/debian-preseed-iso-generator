@@ -1,23 +1,39 @@
 #!/usr/bin/env bash
 # Generate Debian netinst ISOs with embedded preseed, one per profile.
+#
+# Profiles are directories under profiles/ containing a preseed.cfg.
+# Drop a new directory with a preseed.cfg, it builds.
 
-set -e  # Exit on error
 set -u  # Treat unset variables as errors
 set -o pipefail  # Fail if a piped command fails
+# NOTE: set -e is NOT used because bash 5.x has edge-case issues with pushd/popd + set -e
+
+VERSION="0.2.0"
 
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 warn() { printf '[%s] WARN: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 err()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 
 # Define constants
-readonly NETINSTISO="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/"
-readonly CHECKSUM="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/SHA256SUMS"
 readonly PROFILES_DIR="profiles"
 readonly DEFAULT_OUTPUT_DIR="out"
+readonly DEFAULT_ARCH="amd64"
+
+# Global temp dirs for cleanup trap
+CURRENT_ISOFILEDIR=""
+CURRENT_PRESEED_TMPD=""
+
+cleanup() {
+    rm -f "${SHA256SUMS_FILE:-}" "${SHA256SUMS_SIGN_FILE:-}"
+    [[ -n "${CURRENT_ISOFILEDIR:-}" && -d "${CURRENT_ISOFILEDIR}" ]] && rm -rf "${CURRENT_ISOFILEDIR}"
+    [[ -n "${CURRENT_PRESEED_TMPD:-}" && -d "${CURRENT_PRESEED_TMPD}" ]] && rm -rf "${CURRENT_PRESEED_TMPD}"
+}
 
 # Arg parsing
 SELECTED_PROFILE=""
 LIST_ONLY=0
+DRY_RUN=0
+ARCH="${DEFAULT_ARCH}"
 OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,11 +46,20 @@ while [[ $# -gt 0 ]]; do
             LIST_ONLY=1
             shift
             ;;
+        -n|--dry-run)
+            DRY_RUN=1
+            shift
+            ;; 
         -o|--output)
             [[ $# -lt 2 ]] && { err "--output requires DIR"; }
             OUTPUT_DIR="$2"
             shift 2
             ;;
+        -a|--arch)
+            [[ $# -lt 2 ]] && { err "--arch requires ARCH"; }
+            ARCH="$2"
+            shift 2
+            ;; 
         -h|--help)
             cat <<EOF
 Usage: $0 [OPTIONS]
@@ -43,10 +68,18 @@ Options:
   -p, --profile NAME   build only specified profile
   -l, --list           list available profiles and exit
   -o, --output DIR     output directory (default: ${DEFAULT_OUTPUT_DIR}/)
+  -a, --arch ARCH      target architecture (default: ${DEFAULT_ARCH})
+                       supported: amd64, arm64, i386
+  -n, --dry-run        show what would be done without executing
   -h, --help           show this help
+  -V, --version        print version and exit
 
 With no options, builds all profiles found in ${PROFILES_DIR}/.
 EOF
+            exit 0
+            ;;
+        -V|--version)
+            echo "debian-preseed-iso-generator ${VERSION}"
             exit 0
             ;;
         *)
@@ -55,9 +88,21 @@ EOF
     esac
 done
 
+# Validate architecture and map to initrd directory
+case "${ARCH}" in
+    amd64) INITRD_DIR="install.amd" ;;
+    arm64) INITRD_DIR="install.a64" ;;
+    i386)  INITRD_DIR="install.i386" ;;
+    *)     err "Unsupported architecture '${ARCH}'. Supported: amd64, arm64, i386" ;;
+esac
+
+NETINSTISO="https://cdimage.debian.org/debian-cd/current/${ARCH}/iso-cd/"
+CHECKSUM="${NETINSTISO}SHA256SUMS"
+
 # Change to the script directory
 BASEDIR=$(dirname "$0")
-pushd "${BASEDIR}" > /dev/null || exit 1
+_orig_dir="${PWD}"
+cd "${BASEDIR}" || exit 1
 
 # Resolve output directory to absolute path
 if [[ "${OUTPUT_DIR}" = /* ]]; then
@@ -94,15 +139,30 @@ if [[ -n "${SELECTED_PROFILE}" ]]; then
     PROFILES=("${SELECTED_PROFILE}")
 fi
 
-# Ensure necessary commands are available
-for cmd in wget curl sha256sum awk grep gunzip gzip cpio xorriso envsubst gpg; do
+# --dry-run: show plan and exit
+if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo "Architecture:      ${ARCH}"
+    echo "Profiles to build: ${PROFILES[*]}"
+    echo "Output directory:  ${OUTPUT_DIR_ABS}"
+    for p in "${PROFILES[@]}"; do
+        echo "  -> ${OUTPUT_DIR_ABS}/${p}-preseed-debian-${ARCH}-netinst.iso"
+    done
+    echo "ISO source:        ${NETINSTISO}"
+    echo "ISO will be downloaded if not cached with matching checksum."
+    exit 0
+fi
+for cmd in wget curl sha256sum awk grep gunzip gzip cpio xorriso; do
     if ! command -v "$cmd" &> /dev/null; then
         err "Required tool '$cmd' is not installed!"
     fi
 done
 
+if ! command -v gpg &> /dev/null; then
+    warn "gpg not found; GPG signature verification skipped (install gnupg for full verification)"
+fi
+
 # Find the latest Debian netinstall ISO filename
-ISO_FILENAME=$(curl --silent "${NETINSTISO}" | grep -o 'debian-[^ ]*-amd64-netinst.iso' | head -n 1)
+ISO_FILENAME=$(curl --silent "${NETINSTISO}" | grep -o "debian-[^ ]*-${ARCH}-netinst.iso" | head -n 1)
 if [[ -z "$ISO_FILENAME" ]]; then
     err "Could not determine the latest Debian netinstall ISO filename."
 fi
@@ -110,32 +170,34 @@ fi
 # Download SHA256SUMS + signature, verify GPG
 SHA256SUMS_FILE=$(mktemp -t sha256sums-XXXXXX)
 SHA256SUMS_SIGN_FILE=$(mktemp -t sha256sums-sign-XXXXXX)
-trap 'rm -f "${SHA256SUMS_FILE}" "${SHA256SUMS_SIGN_FILE}"' EXIT
+trap cleanup EXIT
 
 curl --silent --show-error --fail "${CHECKSUM}" -o "${SHA256SUMS_FILE}" \
     || err "Failed to download SHA256SUMS"
 curl --silent --show-error --fail "${CHECKSUM}.sign" -o "${SHA256SUMS_SIGN_FILE}" \
     || err "Failed to download SHA256SUMS.sign"
 
-KEYRING=""
-for candidate in /usr/share/keyrings/debian-archive-keyring.gpg /usr/share/keyrings/debian-role-keys.gpg; do
-    if [[ -f "${candidate}" ]]; then
-        KEYRING="${candidate}"
-        break
-    fi
-done
+if command -v gpg &> /dev/null; then
+    KEYRING=""
+    for candidate in /usr/share/keyrings/debian-archive-keyring.gpg /usr/share/keyrings/debian-role-keys.gpg; do
+        if [[ -f "${candidate}" ]]; then
+            KEYRING="${candidate}"
+            break
+        fi
+    done
 
-if [[ -n "${KEYRING}" ]]; then
-    if gpg --keyring "${KEYRING}" --verify "${SHA256SUMS_SIGN_FILE}" "${SHA256SUMS_FILE}" 2>/dev/null; then
-        log "GPG signature verified for SHA256SUMS"
+    if [[ -n "${KEYRING}" ]]; then
+        if gpg --keyring "${KEYRING}" --verify "${SHA256SUMS_SIGN_FILE}" "${SHA256SUMS_FILE}" 2>/dev/null; then
+            log "GPG signature verified for SHA256SUMS"
+        else
+            warn "GPG verification failed; proceeding with checksum only"
+        fi
     else
-        warn "GPG verification failed; proceeding with checksum only"
-    fi
-else
-    if gpg --verify "${SHA256SUMS_SIGN_FILE}" "${SHA256SUMS_FILE}" 2>/dev/null; then
-        log "GPG signature verified for SHA256SUMS"
-    else
-        warn "GPG verification unavailable; install debian-archive-keyring for full verification"
+        if gpg --verify "${SHA256SUMS_SIGN_FILE}" "${SHA256SUMS_FILE}" 2>/dev/null; then
+            log "GPG signature verified for SHA256SUMS"
+        else
+            warn "GPG verification unavailable; install debian-archive-keyring for full verification"
+        fi
     fi
 fi
 
@@ -179,7 +241,7 @@ if [[ -z "${ISO_FILE}" ]]; then
 fi
 
 for PROFILE in "${PROFILES[@]}"; do
-    ISOFILE="${OUTPUT_DIR_ABS}/${PROFILE}-preseed-debian-netinst.iso"
+    ISOFILE="${OUTPUT_DIR_ABS}/${PROFILE}-preseed-debian-${ARCH}-netinst.iso"
 
     if [[ ! -d "${PROFILES_DIR}/${PROFILE}" ]]; then
         err "Directory ${PROFILES_DIR}/${PROFILE} does not exist!"
@@ -189,70 +251,83 @@ for PROFILE in "${PROFILES[@]}"; do
 
     # Extract ISO contents into a temporary directory
     ISOFILEDIR=$(mktemp -d -t isofiles-XXXXXX)
-    xorriso -osirrox on -indev "../../${ISO_FILE}" -extract / "${ISOFILEDIR}"
+    CURRENT_ISOFILEDIR="${ISOFILEDIR}"
+    xorriso -osirrox on -indev "../../${ISO_FILE}" -extract / "${ISOFILEDIR}" \
+        || err "xorriso extraction failed"
     chmod --recursive u+w "${ISOFILEDIR}"
 
-    # Prepare preseed.cfg: raw file wins; otherwise render template from <profile>.env
+    # Prepare preseed.cfg
     PRESEED_TMPD=$(mktemp -d -t preseed-XXXXXX)
-    PROFILE_ENV="${PROFILE}.env"
+    CURRENT_PRESEED_TMPD="${PRESEED_TMPD}"
     if [[ -f preseed.cfg ]]; then
         cp preseed.cfg "${PRESEED_TMPD}/preseed.cfg"
-    elif [[ -f "${PROFILE_ENV}" ]]; then
-        TEMPLATE="../../templates/preseed.cfg.tmpl"
-        if [[ ! -f "${TEMPLATE}" ]]; then
-            rm -rf "${PRESEED_TMPD}"
-            err "Profile '${PROFILE}' uses ${PROFILE_ENV} but ${TEMPLATE} is missing."
-        fi
-        (
-            set -a
-            # shellcheck disable=SC1090
-            source "${PROFILE_ENV}"
-            set +a
-            envsubst "\${LOCALE} \${KEYMAP} \${HOSTNAME} \${DOMAIN} \${MIRROR_HOST} \${MIRROR_DIR} \${MIRROR_PROXY} \${ROOT_PASSWORD_HASH} \${USER_FULLNAME} \${USER_NAME} \${USER_PASSWORD_HASH} \${TIMEZONE} \${NTP_SERVER} \${PARTITION_METHOD} \${LVM_SIZE} \${PARTITION_RECIPE} \${APT_NON_FREE_FIRMWARE} \${APT_NON_FREE} \${APT_CONTRIB} \${TASKS} \${PACKAGES} \${UPGRADE_POLICY} \${POPCON} \${GRUB_ONLY_DEBIAN} \${GRUB_WITH_OTHER_OS} \${LATE_COMMAND}" \
-                < "${TEMPLATE}" > "${PRESEED_TMPD}/preseed.cfg"
-        )
     else
+        CURRENT_PRESEED_TMPD=""
         rm -rf "${PRESEED_TMPD}"
-        err "Profile '${PROFILE}' has neither preseed.cfg nor ${PROFILE_ENV}."
+        err "Profile '${PROFILE}' has no preseed.cfg."
     fi
 
     # Append preseed.cfg into initrd
-    INITRD_ABS="$(pwd)/${ISOFILEDIR}/install.amd/initrd"
+    INITRD_ABS="${ISOFILEDIR}/${INITRD_DIR}/initrd"
     gunzip "${INITRD_ABS}.gz"
     ( cd "${PRESEED_TMPD}" && echo preseed.cfg | cpio --format=newc --create --append --file="${INITRD_ABS}" )
     gzip "${INITRD_ABS}"
     rm -rf "${PRESEED_TMPD}"
+    CURRENT_PRESEED_TMPD=""
 
     # Generate new md5sum.txt
-    pushd "${ISOFILEDIR}" > /dev/null
-    find . -type f -print0 | xargs -0 md5sum > md5sum.txt
-    popd > /dev/null
+    ( cd "${ISOFILEDIR}" && find . -type f -print0 | xargs -0 md5sum > md5sum.txt )
 
-    # Create bootable hybrid ISO (BIOS + UEFI) via xorriso
-    ISOHDPFX=$(find "${ISOFILEDIR}" -name 'isohdpfx.bin' -print -quit)
-    [[ -z "${ISOHDPFX}" ]] && ISOHDPFX="/usr/lib/ISOLINUX/isohdpfx.bin"
-    if [[ ! -f "${ISOHDPFX}" ]]; then
-        err "isohdpfx.bin not found (looked in ISO and /usr/lib/ISOLINUX/)."
+    # Create bootable ISO via xorriso
+    # amd64/i386: BIOS + UEFI hybrid. arm64: UEFI-only.
+    x86_arch=0
+    [[ "${ARCH}" == "amd64" || "${ARCH}" == "i386" ]] && x86_arch=1
+
+    if [[ ${x86_arch} -eq 1 ]]; then
+        ISOHDPFX=$(find "${ISOFILEDIR}" -name 'isohdpfx.bin' -print -quit)
+        if [[ -z "${ISOHDPFX}" ]]; then
+            for candidate in /usr/lib/ISOLINUX/isohdpfx.bin \
+                             /usr/lib/syslinux/bios/isohdpfx.bin \
+                             /usr/lib/syslinux/mbr/isohdpfx.bin \
+                             /usr/share/syslinux/isohdpfx.bin; do
+                if [[ -f "${candidate}" ]]; then
+                    ISOHDPFX="${candidate}"
+                    break
+                fi
+            done
+        fi
+        if [[ -z "${ISOHDPFX}" ]]; then
+            err "isohdpfx.bin not found. Install isolinux (Debian) or syslinux (Arch)."
+        fi
+
+        xorriso -as mkisofs \
+            -r -V "DEBIAN-PRESEED" \
+            -o "${ISOFILE}" \
+            -J -joliet-long \
+            -isohybrid-mbr "${ISOHDPFX}" \
+            -b isolinux/isolinux.bin \
+            -c isolinux/boot.cat \
+            -boot-load-size 4 -boot-info-table -no-emul-boot \
+            -eltorito-alt-boot \
+            -e boot/grub/efi.img \
+            -no-emul-boot -isohybrid-gpt-basdat \
+            "${ISOFILEDIR}" \
+            || err "xorriso ISO creation failed"
+    else
+        xorriso -as mkisofs \
+            -r -V "DEBIAN-PRESEED" \
+            -o "${ISOFILE}" \
+            -J -joliet-long \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            "${ISOFILEDIR}" \
+            || err "xorriso ISO creation failed"
     fi
 
-    xorriso -as mkisofs \
-        -r -V "DEBIAN-PRESEED" \
-        -o "${ISOFILE}" \
-        -J -joliet-long \
-        -isohybrid-mbr "${ISOHDPFX}" \
-        -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat \
-        -boot-load-size 4 -boot-info-table -no-emul-boot \
-        -eltorito-alt-boot \
-        -e boot/grub/efi.img \
-        -no-emul-boot -isohybrid-gpt-basdat \
-        "${ISOFILEDIR}"
-
-    # Clean up temporary directory
     rm --recursive --force "${ISOFILEDIR}"
+    CURRENT_ISOFILEDIR=""
 
-    popd > /dev/null
+    popd > /dev/null || true
 done
 
-popd > /dev/null
-
+cd "${_orig_dir}" 2>/dev/null || true

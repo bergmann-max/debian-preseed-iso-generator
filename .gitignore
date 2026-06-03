@@ -1,5 +1,6 @@
 *.iso
 build/
-out/
+out/*
+!out/.gitkeep
 profiles/*/isofiles/
 profiles/*/*.iso
