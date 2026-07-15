@@ -124,17 +124,17 @@ EOF
     esac
 done
 
-[[ $_COLOR -eq 1 ]] && {
+  if [[ $_COLOR -eq 1 ]]; then
     GREEN=$'\033[0;32m'
     ORANGE=$'\033[0;33m'
     RED=$'\033[0;31m'
     NC=$'\033[0m'
-} || {
+  else
     GREEN=''
     ORANGE=''
     RED=''
     NC=''
-}
+  fi
 
 # Validate architecture and map to initrd directory
 case "${ARCH}" in
@@ -406,7 +406,7 @@ for PRESEED in "${PRESEEDS[@]}"; do
 done
 
 log "Done. ${#PRESEEDS[@]} ISO(s) built:"
-for output_iso in "${OUTPUT_DIR_ABS}"/*-preseed-debian-${ARCH}-netinst.iso; do
+for output_iso in "${OUTPUT_DIR_ABS}/"*-preseed-debian-"${ARCH}"-netinst.iso; do
     log "  ${output_iso}"
 done
 cd "${_orig_dir}" 2>/dev/null || true

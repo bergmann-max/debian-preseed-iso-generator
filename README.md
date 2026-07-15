@@ -83,6 +83,7 @@ OVMF paths by distro (adjust as needed):
 
 ## Notes
 
+- This project builds **bootable bare-metal ISOs** with the preseed baked into the initrd - for USB sticks, BMC/iLO virtual media, air-gapped installs, and anything else that needs to boot from an ISO. If your target is a VM- or cloud-image (qcow2, OVA, AMI, etc.) instead, use [Packer](https://developer.hashicorp.com/packer).
 - The generated ISO contains a regenerated `md5sum.txt` (Debian installer uses this to verify its components at boot). The original GPG signature on `md5sum.txt` is lost because `preseed.cfg` is added to the initrd. Verify the generated ISO with `md5sum out/<file>.iso` against the expected hash if integrity matters.
 - Architecture: `--arch amd64` and `--arch i386` produce a BIOS + UEFI hybrid ISO. `--arch arm64` is UEFI-only.
 - The downloaded netinst ISO is cached in the script directory (not in `out/`). Delete the cached `debian-*-netinst.iso` files to reclaim disk space.
